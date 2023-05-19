@@ -1,0 +1,34 @@
+version: '2.3'
+
+services:
+  agent:
+    image: microros/micro-ros-agent:galactic
+    restart: unless-stopped
+    network_mode: service:husarnet-agent
+    command: tcp6 --port 8888 # -v6
+
+  listener:
+    image: osrf/ros:foxy-desktop # ROS Foxy has Fast DDS preinstalled
+    restart: unless-stopped
+    # A default 'listener' uses RMW_QOS_POLICY_RELIABILITY_RELIABLE and
+    # our micro-ROS node provides data with RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT.
+    # This is why need to use 'listener_best_effor' .
+    # To find info about QOS setting of all subscribers and publishers to a specific topic use:
+    # ros2 topic info /chatter -v
+    command: ros2 run demo_nodes_cpp listener_best_effort 
+
+  husarnet-agent:
+    image: husarnet/husarnet
+    restart: unless-stopped
+    volumes:
+      - /var/lib/husarnet  # This will persist your Husarnet Client keys, thus IP of the container will be stable/the same between (re)boots
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0  # Husarnet is using IPv6 for the internal connections
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    environment:
+      - HOSTNAME=microros-agent
+    env_file:
+      - ./.env  # create .env file in the same folder
