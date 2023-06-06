@@ -24,6 +24,7 @@
 #define SKIP_WIFI false
 
 #define LED_BUILDIN 2
+#define DEADMAN_SWITCH 13
 #define RCCHECK(fn)                        \
     {                                      \
         if (not SKIP_UROS) {               \
@@ -54,11 +55,11 @@
         }                                  \
     }
 
-#define AGENT_PORT 6666
+#define AGENT_PORT 8888
 #define NODE_NAME "esp32_imu_controller"
 
 constexpr float MIN_THRESHOLD = 0.1;
-char *agent_hostname = (char *)"kazimierz";
+char *agent_hostname = (char *)"rosbot";
 
 rcl_publisher_t cmd_vel_pub;
 rcl_publisher_t imu_pub;
@@ -69,6 +70,8 @@ sensor_msgs__msg__Imu imu_msg;
 rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
+static bool is_holonomic = true;
+size_t last_time = 0;
 
 static Adafruit_MPU6050 mpu;
 static sensors_event_t accelerometer, gyroscope, temp;
@@ -95,12 +98,14 @@ void get_initial_rpy();
 void publish_imu(void *parameter);
 void calculate_imu();
 void publish_cmd_vel(void *parameter);
+void get_rpy_from_sensors(MPU6050RPY *rpy);
 
 void setup(void) {
     Serial1.begin(115200, SERIAL_8N1, 3, 1);
     Serial1.println("\r\n**************************************");
     Serial1.println("micro-ROS + Husarnet + MPU6050 example");
     Serial1.println("**************************************\r\n");
+    pinMode(DEADMAN_SWITCH, INPUT_PULLUP);
 
     queue_imu_data = xQueueCreate(3, sizeof(ImuMeansurements));
     queue_rpy = xQueueCreate(3, sizeof(MPU6050RPY));
@@ -182,9 +187,9 @@ void initialize_uros() {
     RCCRETRY(rclc_publisher_init_best_effort(
         &cmd_vel_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist),
         "cmd_vel"));
-    RCCRETRY(rclc_publisher_init_best_effort(
-        &imu_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
-        "imu_raw"));
+    // RCCRETRY(rclc_publisher_init_best_effort(
+    //     &imu_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
+    //     "imu_raw"));
 
     RCCHECK(rmw_uros_sync_session(1000));
     Serial1.println("Connected to agent!");
@@ -245,13 +250,16 @@ void read_imu(void *parameter) {
     for (;;) {
         mpu.getEvent(&accelerometer, &gyroscope, &temp);
         calculate_imu();
-        vTaskDelay(10);
+        // vTaskDelay(10);
+        if (digitalRead(DEADMAN_SWITCH)) {
+            get_rpy_from_sensors(&initial_rpy_angles);
+        }
     }
 }
 void get_rpy_from_sensors(MPU6050RPY *rpy) {
     rpy->pitch = atan(accelerometer.acceleration.x / sqrt(accelerometer.acceleration.y * accelerometer.acceleration.y + accelerometer.acceleration.z * accelerometer.acceleration.z));
     rpy->roll = atan(accelerometer.acceleration.y / sqrt(accelerometer.acceleration.x * accelerometer.acceleration.x + accelerometer.acceleration.z * accelerometer.acceleration.z));
-    rpy->yaw = atan(accelerometer.acceleration.z / sqrt(accelerometer.acceleration.x * accelerometer.acceleration.x + accelerometer.acceleration.z * accelerometer.acceleration.z));
+    // rpy->yaw = atan(accelerometer.acceleration.z / sqrt(accelerometer.acceleration.x * accelerometer.acceleration.x + accelerometer.acceleration.z * accelerometer.acceleration.z));
 }
 
 void get_initial_rpy() {
@@ -314,19 +322,25 @@ void publish_imu(void *parameter) {
         imu_msg.linear_acceleration.z = imu_data.acceleration.z;
         RCSOFTCHECK(rcl_publish(&imu_pub, &imu_msg, NULL));
         vTaskDelay(100 / portTICK_PERIOD_MS);
-
     }
 }
 
 void publish_cmd_vel(void *parameter) {
+
+    // Initialise the xLastWakeTime variable with the current time.
     while (true) {
         MPU6050RPY rpy;
         xQueueReceive(queue_rpy, &rpy, portMAX_DELAY);
         if (not isnan(rpy.roll) and not isnan(rpy.pitch)) {
             cmd_vel_msg.linear.y = fabs(rpy.roll) < MIN_THRESHOLD ? 0.0 : rpy.roll / PI;
-            cmd_vel_msg.angular.z = fabs(rpy.roll) < MIN_THRESHOLD ? 0.0 : rpy.roll / PI;
+            // cmd_vel_msg.angular.z = fabs(rpy.roll)*1.2 < MIN_THRESHOLD ? 0.0 : rpy.roll / PI;
             cmd_vel_msg.linear.x = fabs(rpy.pitch) < MIN_THRESHOLD ? 0.0 : rpy.pitch / PI;
-            RCSOFTCHECK(rcl_publish(&cmd_vel_pub, &cmd_vel_msg, NULL));
+
+            if (not digitalRead(DEADMAN_SWITCH)) {
+                RCSOFTCHECK(rcl_publish(&cmd_vel_pub, &cmd_vel_msg, NULL));
+            } else {
+                last_time = millis();
+            }
             // vTaskDelay(100 / portTICK_PERIOD_MS);
         }
     }

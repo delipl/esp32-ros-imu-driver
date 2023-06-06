@@ -34,6 +34,9 @@ services:
     restart: unless-stopped
     environment:
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/fastdds.xml
+    # volumes:
+    # - ./fastdds.xml://tmp/disable_fastdds_shm.xml
     # devices:
     # - /dev/ttyUSB0
     command: tcp6 --port 6666 # -v6
